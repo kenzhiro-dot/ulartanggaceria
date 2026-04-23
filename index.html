@@ -121,11 +121,12 @@
         <div id="main-actions" class="space-y-4 w-full max-w-xs md:max-w-md">
             <input type="text" id="username-input" class="w-full p-4 rounded-2xl bg-white border-4 border-sky-100 text-sky-900 text-center outline-none focus:border-orange-400 transition-all text-lg font-bold shadow-inner" placeholder="Nama Kamu" maxlength="12">
             
-            <button onclick="createRoom()" class="btn-game w-full bg-sky-500 text-white py-4 rounded-2xl font-black text-xl">BUAT SERVER</button>
+            <button id="create-room-btn" onclick="createRoom()" class="btn-game w-full bg-sky-500 text-white py-4 rounded-2xl font-black text-xl">BUAT SERVER</button>
             <div class="flex gap-2">
                 <input type="text" id="join-id-input" class="flex-1 p-4 rounded-2xl bg-white border-4 border-sky-100 text-sky-900 text-center outline-none uppercase font-black tracking-widest" placeholder="KODE">
-                <button onclick="joinRoom()" class="btn-game bg-orange-500 text-white px-6 rounded-2xl font-black text-lg">GABUNG</button>
+                <button id="join-room-btn" onclick="joinRoom()" class="btn-game bg-orange-500 text-white px-6 rounded-2xl font-black text-lg">GABUNG</button>
             </div>
+            <p id="status-msg" class="text-sm text-sky-400 font-bold text-center"></p>
         </div>
 
         <div id="waiting-area" class="hidden text-center space-y-6 w-full max-w-sm">
@@ -204,6 +205,7 @@
     let roomData = null;
     let animatedPositions = {}; 
     let isAnimating = false;
+    let isAuthReady = false;
 
     function getTileCoords(pos) {
         if (pos < 1) pos = 1;
@@ -314,47 +316,100 @@
     }
 
     async function initAuth() {
-        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-            await signInWithCustomToken(auth, __initial_auth_token);
-        } else {
-            await signInAnonymously(auth);
+        const statusMsg = document.getElementById('status-msg');
+        statusMsg.innerText = "Menghubungkan...";
+        
+        try {
+            if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                await signInWithCustomToken(auth, __initial_auth_token);
+            } else {
+                await signInAnonymously(auth);
+            }
+        } catch (e) {
+            console.error(e);
+            statusMsg.innerText = "Gagal menghubungkan. Periksa koneksi.";
         }
-        onAuthStateChanged(auth, u => { if(u) myUID = u.uid; });
+
+        onAuthStateChanged(auth, u => { 
+            if(u) {
+                myUID = u.uid; 
+                isAuthReady = true;
+                statusMsg.innerText = "Siap bermain!";
+            }
+        });
     }
 
     window.createRoom = async () => {
-        const nameVal = document.getElementById('username-input').value.trim();
-        if(!nameVal) return;
+        if (!isAuthReady) return;
+        const nameInput = document.getElementById('username-input');
+        const nameVal = nameInput.value.trim();
+        if(!nameVal) {
+            nameInput.classList.add('border-red-400');
+            setTimeout(() => nameInput.classList.remove('border-red-400'), 1000);
+            return;
+        }
+        
+        document.getElementById('status-msg').innerText = "Membuat room...";
         myName = nameVal;
         roomID = Math.random().toString(36).substring(2, 7).toUpperCase();
-        await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomID), {
-            status: 'waiting', host: myUID,
-            players: [{ uid: myUID, name: myName, position: 1, color: '#0ea5e9' }],
-            turnIndex: 0, lastRoll: 0, winner: null
-        });
-        setupLobbyListener();
+        
+        try {
+            await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomID), {
+                status: 'waiting', host: myUID,
+                players: [{ uid: myUID, name: myName, position: 1, color: '#0ea5e9' }],
+                turnIndex: 0, lastRoll: 0, winner: null
+            });
+            setupLobbyListener();
+        } catch (e) {
+            console.error(e);
+            document.getElementById('status-msg').innerText = "Gagal membuat room.";
+        }
     };
 
     window.joinRoom = async () => {
-        const id = document.getElementById('join-id-input').value.trim().toUpperCase();
+        if (!isAuthReady) return;
+        const idInput = document.getElementById('join-id-input');
+        const id = idInput.value.trim().toUpperCase();
         const nameVal = document.getElementById('username-input').value.trim();
         if(!id || !nameVal) return;
+        
+        document.getElementById('status-msg').innerText = "Mencari room...";
         myName = nameVal;
         const ref = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', id);
-        const snap = await getDoc(ref);
-        if(!snap.exists()) return;
-        const ps = snap.data().players;
-        const colors = ['#0ea5e9', '#f59e0b', '#10b981', '#ec4899', '#8b5cf6'];
-        ps.push({ uid: myUID, name: myName, position: 1, color: colors[ps.length] || '#334155' });
-        roomID = id;
-        await updateDoc(ref, { players: ps });
-        setupLobbyListener();
+        
+        try {
+            const snap = await getDoc(ref);
+            if(!snap.exists()) {
+                document.getElementById('status-msg').innerText = "Room tidak ditemukan!";
+                return;
+            }
+            const data = snap.data();
+            if (data.status !== 'waiting') {
+                document.getElementById('status-msg').innerText = "Game sudah dimulai!";
+                return;
+            }
+            
+            const ps = data.players;
+            // Hindari double join jika reload
+            if (!ps.find(p => p.uid === myUID)) {
+                const colors = ['#0ea5e9', '#f59e0b', '#10b981', '#ec4899', '#8b5cf6'];
+                ps.push({ uid: myUID, name: myName, position: 1, color: colors[ps.length] || '#334155' });
+                await updateDoc(ref, { players: ps });
+            }
+            
+            roomID = id;
+            setupLobbyListener();
+        } catch (e) {
+            console.error(e);
+            document.getElementById('status-msg').innerText = "Gagal bergabung.";
+        }
     };
 
     function setupLobbyListener() {
         document.getElementById('main-actions').classList.add('hidden');
         document.getElementById('waiting-area').classList.remove('hidden');
         document.getElementById('display-room-id').innerText = roomID;
+        
         onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomID), snap => {
             const data = snap.data();
             if(!data) return;
@@ -364,7 +419,7 @@
             document.getElementById('player-list').innerHTML = data.players.map(p => `
                 <div class="px-3 py-2 bg-white rounded-xl font-bold text-sky-800 flex items-center gap-2 border-2 border-sky-50 shadow-sm text-sm">
                     <div class="w-3 h-3 rounded-full" style="background:${p.color}"></div>
-                    ${p.name}
+                    ${p.name} ${p.uid === myUID ? '(Kamu)' : ''}
                 </div>
             `).join('');
             
@@ -390,8 +445,11 @@
                 `).join('');
 
                 data.players.forEach((p, i) => {
-                    if (old && old.players[i].position !== p.position) animateMoveSequence(p.uid, old.players[i].position, p.position, data.lastRoll);
-                    else if (!animatedPositions[p.uid]) animatedPositions[p.uid] = getTileCoords(p.position);
+                    if (old && old.players[i].position !== p.position) {
+                        animateMoveSequence(p.uid, old.players[i].position, p.position, data.lastRoll);
+                    } else if (!animatedPositions[p.uid]) {
+                        animatedPositions[p.uid] = getTileCoords(p.position);
+                    }
                 });
 
                 if(data.winner) {
@@ -399,27 +457,38 @@
                     document.getElementById('win-screen').classList.remove('hidden');
                 }
             }
+        }, err => {
+            console.error("Listener error:", err);
         });
     }
 
     window.startGame = async () => {
-        await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomID), { status: 'playing' });
+        try {
+            await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomID), { status: 'playing' });
+        } catch (e) {
+            console.error(e);
+        }
     };
 
     async function animateMoveSequence(uid, from, to, roll) {
         if (isAnimating) return;
         isAnimating = true;
         const targetFromDice = Math.min(100, from + roll);
+        
         if (from + roll <= 100) {
             for (let i = from + 1; i <= targetFromDice; i++) await jumpTo(uid, i);
         }
+        
         if (targetFromDice !== to) {
             await new Promise(r => setTimeout(r, 600));
             await slideTo(uid, to);
         }
+        
         isAnimating = false;
-        const cur = roomData.players[roomData.turnIndex];
-        document.getElementById('roll-btn').disabled = cur.uid !== myUID || roomData.winner;
+        if (roomData) {
+            const cur = roomData.players[roomData.turnIndex];
+            document.getElementById('roll-btn').disabled = cur.uid !== myUID || roomData.winner;
+        }
     }
 
     function jumpTo(uid, tileNum) {
@@ -465,7 +534,7 @@
     }
 
     window.handleRoll = async () => {
-        if(isAnimating) return;
+        if(isAnimating || !roomData) return;
         const roll = Math.floor(Math.random() * 6) + 1;
         const idx = roomData.turnIndex;
         let nextPos = roomData.players[idx].position + roll;
@@ -473,14 +542,22 @@
         const finalPos = PORTALS[nextPos] || nextPos;
         const ps = [...roomData.players];
         ps[idx].position = finalPos;
-        await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomID), {
-            players: ps, turnIndex: (idx + 1) % ps.length, lastRoll: roll,
-            winner: finalPos === 100 ? ps[idx].name : null
-        });
+        
+        try {
+            await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomID), {
+                players: ps, turnIndex: (idx + 1) % ps.length, lastRoll: roll,
+                winner: finalPos === 100 ? ps[idx].name : null
+            });
+        } catch (e) {
+            console.error(e);
+        }
     };
 
     function gameLoop() { drawBoard(); requestAnimationFrame(gameLoop); }
-    window.onload = () => { initAuth(); gameLoop(); };
+    window.onload = () => { 
+        initAuth(); 
+        gameLoop(); 
+    };
 </script>
 </body>
 </html>
